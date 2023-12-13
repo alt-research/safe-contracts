@@ -1,81 +1,51 @@
-name: safe-contracts
-on: [push]
+name: Build safe-contracts Docker Image
+on:
+  push:
+    branches:
+      - 'ci_v1.3.0'
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
-        with:
-          node-version: 15
-      - uses: actions/cache@v2
-        with:
-          path: "**/node_modules"
-          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn --frozen-lockfile
-      - run: yarn build
-      - run: yarn coverage
-      - name: Coveralls
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
-        with:
-          node-version: 15
-      - uses: actions/cache@v2
-        with:
-          path: "**/node_modules"
-          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn --frozen-lockfile
-      - run: yarn lint:sol
-  tests-other:
+  docker:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        contract-name: ["GnosisSafeL2"]
-    env:
-      SAFE_CONTRACT_UNDER_TEST: ${{ matrix.contract-name }}
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
-        with:
-          node-version: 15
-      - uses: actions/cache@v2
-        with:
-          path: "**/node_modules"
-          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
-      - run: yarn --frozen-lockfile
-      - run: yarn build
-      - run: yarn coverage
-      - name: Coveralls
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-  benchmarks:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        solidity: ["0.7.6", "0.8.2"]
         include:
-        - solidity: "0.8.2"
-          settings: '{"viaIR":true,"optimizer":{"enabled":true,"runs":10000}}'
-    env:
-      SOLIDITY_VERSION: ${{ matrix.solidity }}
-      SOLIDITY_SETTINGS: ${{ matrix.settings }}
+          - name: build and push safe-contracts
+            image: safe-contracts
+            dockerfile: Dockerfile
+            context: .
+            buildargs: ''
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Prepare Environment Variables
+        run: |
+          echo "SHORT_SHA=${GITHUB_SHA::7}" | tee -a $GITHUB_ENV
+          GIT_BRANCH=$(git branch --show-current)
+          echo "GIT_BRANCH=$GIT_BRANCH" | tee -a $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
         with:
-          node-version: 15
-      - uses: actions/cache@v2
+          aws-access-key-id: ${{ secrets.ECR_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.ECR_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: ${{ matrix.name }}
+        uses: docker/build-push-action@v4
         with:
-          path: "**/node_modules"
-          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
-      - run: (yarn --frozen-lockfile && yarn build && yarn hardhat codesize --contractname GnosisSafe && yarn benchmark) || echo "Benchmark failed"
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ secrets.ECR_REGISTRY }}/${{ matrix.image }}:${{ env.GIT_BRANCH }}-${{ github.sha }}
+            ${{ secrets.ECR_REGISTRY }}/${{ matrix.image }}:${{ env.GIT_BRANCH }}-${{ env.SHORT_SHA }}
+          file: ${{ matrix.dockerfile }}
+          provenance: false
